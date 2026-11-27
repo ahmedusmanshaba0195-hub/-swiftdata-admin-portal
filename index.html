@@ -17,6 +17,7 @@
 <button class="navbtn" data-page="orders">▣ &nbsp; Orders Management</button>
 <button class="navbtn" data-page="referrals">♧ &nbsp; Referral Management</button>
 <button class="navbtn" data-page="cashback">％ &nbsp; Cashback</button>
+<button class="navbtn" data-page="profit">₦ &nbsp; Profit &amp; Withdrawals</button>
 <button class="navbtn" data-page="tickets">☏ &nbsp; Support Tickets</button>
 <button class="navbtn" data-page="notifications">▱ &nbsp; Notifications</button>
 <button class="navbtn" data-page="reports">▥ &nbsp; Reports &amp; Analytics</button>
@@ -32,6 +33,8 @@ const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 const date=v=>v?new Date(v).toLocaleString():"—";
 function alertBox(el,msg,ok=false){el.textContent=msg;el.className="alert"+(ok?" success":"")}function clear(el){el.textContent="";el.className="alert hidden"}
 async function call(body){const {data:{session}}=await db.auth.getSession();if(!session)throw Error("Session expired. Please sign in again.");const {data,error}=await db.functions.invoke("support-admin",{body});if(error){let m=error.message||"Support service request failed";try{let b=await error.context.json();if(b.error)m=b.error}catch(_){}throw Error(m)}if(data?.error)throw Error(data.error);return data}
+async function profitCall(body){const {data:{session}}=await db.auth.getSession();if(!session)throw Error("Session expired. Please sign in again.");const {data,error}=await db.functions.invoke("profit-admin",{body});if(error){let m=error.message||"Profit service request failed";try{let b=await error.context.json();if(b.error)m=b.error}catch(_){}throw Error(m)}if(data?.error)throw Error(data.error);return data}
+const money=v=>"₦"+Number(v||0).toLocaleString("en-NG",{minimumFractionDigits:2,maximumFractionDigits:2});
 function badge(s){s=["open","in_progress","resolved","closed"].includes(s)?s:"open";return `<span class="status ${s}">${esc(s.replace("_"," "))}</span>`}
 function go(page){$("dashPage").classList.toggle("hidden",page!=="dashboard");$("ticketsPage").classList.toggle("hidden",page!=="tickets");$("title").textContent=page==="tickets"?"Support Tickets":"Dashboard";document.querySelectorAll(".navbtn").forEach(b=>b.classList.toggle("active",b.dataset.page===page));$("sidebar").classList.remove("open");if(page==="tickets")renderTable()}
 function stats(){$("total").textContent=tickets.length;$("open").textContent=tickets.filter(t=>t.status==="open").length;$("progress").textContent=tickets.filter(t=>t.status==="in_progress").length;$("done").textContent=tickets.filter(t=>["resolved","closed"].includes(t.status)).length}
@@ -48,14 +51,88 @@ $("replyForm").onsubmit=async e=>{e.preventDefault();if(!active)return;let msg=$
 
 const modules={
  customers:['Customer Management','Search customer accounts and manage account access.'],wallets:['Wallet Management','Review customer wallet balances and wallet activity.'],funding:['Wallet Funding','Review Paystack wallet-funding records and payment status.'],
- transactions:['Transactions','Read-only view of existing transaction and VTU records.'],plans:['Data Plan Management','Manage available data plans and their prices.'],networks:['Network Management','Manage supported mobile networks and availability.'],airtime:['Airtime Services','Review airtime services and commission settings.'],orders:['Orders Management','Review customer orders and fulfilment status.'],referrals:['Referral Management','Review referral codes, referrals and reward records.'],cashback:['Cashback','Manage cashback campaigns and customer rewards.'],notifications:['Notifications & Announcements','Prepare customer announcements and service notices.'],reports:['Reports & Analytics','Review sales, wallet funding and service performance.'],settings:['Admin Settings','Configure administrator preferences and portal settings.']
+ transactions:['Transactions','Read-only view of existing transaction and VTU records.'],plans:['Data Plan Management','Manage available data plans and their prices.'],networks:['Network Management','Manage supported mobile networks and availability.'],airtime:['Airtime Services','Review airtime services and commission settings.'],orders:['Orders Management','Review customer orders and fulfilment status.'],referrals:['Referral Management','Review referral codes, referrals and reward records.'],cashback:['Cashback','Manage cashback campaigns and customer rewards.'],profit:['Profit & Withdrawals','Review completed-sale profit and manage manual bank withdrawals.'],notifications:['Notifications & Announcements','Prepare customer announcements and service notices.'],reports:['Reports & Analytics','Review sales, wallet funding and service performance.'],settings:['Admin Settings','Configure administrator preferences and portal settings.']
 };
 function moduleCard(title,desc){return `<div class="panel"><h3>${esc(title)}</h3><p class="muted" style="font-size:13px;line-height:1.6">${esc(desc)}</p><span class="status">Supabase connection pending</span></div>`}
 async function showModule(page){const [h,d]=modules[page]||['Management',''];$('dashPage').classList.add('hidden');$('ticketsPage').classList.add('hidden');$('modulePage').classList.remove('hidden');$('title').textContent=h;$('moduleHeading').textContent=h;$('moduleDescription').textContent=d;$('refreshTransactions').classList.toggle('hidden',page!=='transactions');
+ if(page==='profit'){await showProfit();return}
  if(page==='transactions'){$('moduleBody').innerHTML='<div class="notice">Read-only transaction records. This uses the list_transactions action in support-admin. If that action has not yet been deployed, this page will show an error rather than changing your purchase system.</div><div id="txResults" class="panel" style="margin-top:14px"><div class="loading">Loading transaction records…</div></div>';await loadTransactions();return}
  if(['networks','plans','airtime'].includes(page)){await renderCatalogModule(page);return}
  $('moduleBody').innerHTML=`<div class="notice">This feature already has related Supabase records, but administrator access or safe management operations have not yet been confirmed. It is being left unchanged for the next integration stage.</div>`;
 }
+
+async function showProfit(){
+ const box=$('moduleBody');
+ box.innerHTML=`
+ <div class="notice">Only completed VTU purchases are included in profit. A withdrawal request reserves the amount; it does not transfer money. Transfer funds manually from the business bank account before marking a request as Paid.</div>
+ <div class="stats" style="margin-top:14px">
+  <div class="stat"><small>TOTAL COMPLETED-SALE PROFIT</small><div class="num" id="pTotal">—</div></div>
+  <div class="stat"><small>AVAILABLE PROFIT</small><div class="num" id="pAvailable">—</div></div>
+  <div class="stat"><small>PENDING WITHDRAWALS</small><div class="num" id="pPending">—</div></div>
+  <div class="stat"><small>TOTAL WITHDRAWN</small><div class="num" id="pWithdrawn">—</div></div>
+ </div>
+ <div class="panel">
+  <div class="panelhead"><h3>Request a profit withdrawal</h3></div>
+  <form id="profitRequest">
+   <div class="module-grid">
+    <div class="field"><label>Amount (₦)</label><input name="amount" type="number" min="0.01" step="0.01" required placeholder="Enter amount"></div>
+    <div class="field"><label>Bank name (optional)</label><input name="bank_name" maxlength="100" placeholder="Bank name"></div>
+    <div class="field"><label>Account name (optional)</label><input name="account_name" maxlength="150" placeholder="Account holder"></div>
+    <div class="field"><label>Account number (optional)</label><input name="account_number" inputmode="numeric" maxlength="20" placeholder="Bank account number"></div>
+   </div>
+   <div class="field"><label>Admin note (optional)</label><textarea name="admin_note" maxlength="1000" placeholder="Optional note"></textarea></div>
+   <div id="profitMessage" class="alert hidden"></div>
+   <button id="profitSubmit" class="btn primary">Request withdrawal</button>
+  </form>
+ </div>
+ <div class="panel">
+  <div class="panelhead"><h3>Withdrawal history</h3><button id="refreshProfit" class="btn secondary">↻ Refresh</button></div>
+  <div id="withdrawalRows" class="loading">Loading withdrawal history…</div>
+ </div>`;
+ async function load(){
+  const r=await profitCall({action:"summary"});
+  $('pTotal').textContent=money(r.total_profit);
+  $('pAvailable').textContent=money(r.available_profit);
+  $('pPending').textContent=money(r.pending_withdrawals);
+  $('pWithdrawn').textContent=money(r.total_withdrawn);
+  const rows=Array.isArray(r.withdrawals)?r.withdrawals:[];
+  $('withdrawalRows').innerHTML=rows.length?`<div class="tablewrap"><table><thead><tr><th>Requested</th><th>Amount</th><th>Bank details</th><th>Status</th><th>Transfer reference</th><th>Admin note</th><th>Action</th></tr></thead><tbody>${rows.map(w=>`<tr>
+   <td>${esc(date(w.requested_at))}</td><td><strong>${esc(money(w.amount))}</strong></td>
+   <td>${esc(w.bank_name||'—')}<br>${esc(w.account_name||'')}<br>${esc(w.account_number||'')}</td>
+   <td><span class="status ${w.status==='paid'?'resolved':w.status==='rejected'?'closed':'in_progress'}">${esc(w.status||'pending')}</span></td>
+   <td>${esc(w.transfer_reference||'—')}</td><td>${esc(w.admin_note||'—')}</td>
+   <td>${w.status==='pending'?`<button class="btn primary" data-paid="${esc(w.id)}">Mark paid</button> <button class="btn ghost" data-reject="${esc(w.id)}">Reject</button>`:'—'}</td>
+  </tr>`).join('')}</tbody></table></div>`:'<div class="empty">No withdrawal requests yet.</div>';
+  $('withdrawalRows').querySelectorAll('[data-paid]').forEach(b=>b.onclick=async()=>{
+   const ref=prompt("Enter the bank transfer reference after you have manually sent the money:");
+   if(ref===null)return;
+   if(!ref.trim()){alertBox($('profitMessage'),"A transfer reference is required before marking this request as paid.");return}
+   b.disabled=true;
+   try{await profitCall({action:"update_withdrawal",id:b.dataset.paid,status:"paid",transfer_reference:ref.trim()});alertBox($('profitMessage'),"Withdrawal marked as paid.",true);await load()}
+   catch(e){alertBox($('profitMessage'),e.message);b.disabled=false}
+  });
+  $('withdrawalRows').querySelectorAll('[data-reject]').forEach(b=>b.onclick=async()=>{
+   if(!confirm("Reject this withdrawal request? The reserved amount will become available again."))return;
+   b.disabled=true;
+   try{await profitCall({action:"update_withdrawal",id:b.dataset.reject,status:"rejected"});alertBox($('profitMessage'),"Withdrawal request rejected.",true);await load()}
+   catch(e){alertBox($('profitMessage'),e.message);b.disabled=false}
+  });
+ }
+ $('profitRequest').onsubmit=async e=>{
+  e.preventDefault();
+  const form=e.currentTarget,fd=new FormData(form),amount=Number(fd.get('amount'));
+  if(!Number.isFinite(amount)||amount<=0){alertBox($('profitMessage'),"Enter a valid withdrawal amount.");return}
+  const b=$('profitSubmit');b.disabled=true;b.textContent="Submitting…";
+  try{
+   await profitCall({action:"request_withdrawal",amount,bank_name:String(fd.get('bank_name')||'').trim()||null,account_name:String(fd.get('account_name')||'').trim()||null,account_number:String(fd.get('account_number')||'').trim()||null,admin_note:String(fd.get('admin_note')||'').trim()||null});
+   form.reset();alertBox($('profitMessage'),"Withdrawal request created and reserved successfully.",true);await load();
+  }catch(err){alertBox($('profitMessage'),err.message)}
+  finally{b.disabled=false;b.textContent="Request withdrawal"}
+ };
+ $('refreshProfit').onclick=async()=>{const b=$('refreshProfit');b.disabled=true;try{await load();clear($('profitMessage'))}catch(e){alertBox($('profitMessage'),e.message)}finally{b.disabled=false}};
+ try{await load()}catch(e){$('withdrawalRows').innerHTML=`<div class="alert">${esc(e.message)}</div>`;alertBox($('globalError'),e.message)}
+}
+
 const catalogConfig={networks:{table:'networks',title:'Networks',cols:['id','name','is_active','created_at']},plans:{table:'data_plans',title:'Data plans',cols:['id','network_id','plan_name','data_size','price','validity','is_active','created_at']},airtime:{table:'airtime_services',title:'Airtime services',cols:['id','network_id','commission_rate','is_active','created_at']}};
 async function renderCatalogModule(page){const c=catalogConfig[page];$('moduleBody').innerHTML='<div class="panel loading">Loading '+esc(c.title)+' from Supabase…</div><div id="catalogError" class="alert hidden"></div><div id="catalogForm"></div><div id="catalogRows" class="panel"></div>';try{let q=db.from(c.table).select('*').order('id',{ascending:true});let {data,error}=await q;if(error)throw error;let {data:nets,error:ne}=await db.from('networks').select('id,name').order('id');if(ne)throw ne;window._catalogNetworks=nets||[];renderCatalogForm(page);renderCatalogRows(page,data||[])}catch(e){$('moduleBody').querySelector('.loading')?.remove();alertBox($('catalogError'),`Could not load ${c.title}: ${e.message}`);$('catalogRows').innerHTML='<div class="empty">Check the admin RLS policy and Supabase connection.</div>'}}
 function renderCatalogForm(page){const nets=window._catalogNetworks||[];let form='';if(page==='networks')form=`<form id="catalogCreate" class="panel"><h3>Add network</h3><div class="filters"><input name="name" placeholder="Network name (e.g. MTN)" required><button class="btn primary">Add network</button></div></form>`;if(page==='plans')form=`<form id="catalogCreate" class="panel"><h3>Add data plan</h3><div class="filters"><select name="network_id" required>${nets.map(n=>`<option value="${n.id}">${esc(n.name)}</option>`).join('')}</select><input name="plan_name" placeholder="Plan name" required><input name="data_size" placeholder="Data size (e.g. 1GB)" required><input name="price" type="number" min="0" step="0.01" placeholder="Price ₦" required><input name="validity" placeholder="Validity" required><button class="btn primary">Add plan</button></div></form>`;if(page==='airtime')form=`<form id="catalogCreate" class="panel"><h3>Add airtime service</h3><div class="filters"><select name="network_id" required>${nets.map(n=>`<option value="${n.id}">${esc(n.name)}</option>`).join('')}</select><input name="commission_rate" type="number" min="0" step="0.01" placeholder="Commission rate" required><button class="btn primary">Add service</button></div></form>`;$('catalogForm').innerHTML=form;$('catalogCreate').onsubmit=async e=>{e.preventDefault();let f=new FormData(e.currentTarget),row={};for(let [k,v] of f.entries())row[k]=['network_id','price','commission_rate'].includes(k)?Number(v):v;try{let {error}=await db.from(catalogConfig[page].table).insert(row);if(error)throw error;await renderCatalogModule(page)}catch(err){alertBox($('catalogError'),err.message)}}}
